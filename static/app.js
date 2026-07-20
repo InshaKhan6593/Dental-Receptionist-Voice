@@ -63,15 +63,29 @@ function arrayBufferToBase64(buffer) {
 async function start() {
   active = true;
   talkLabel.textContent = "Stop";
-  setStatus("connecting…", false);
+  setStatus("preparing microphone…", false);
 
+  // Build the audio graph and get mic permission BEFORE opening the socket.
+  // The server sends its greeting the instant the socket connects, so the
+  // playback node must already exist — otherwise the first chunks arrive with
+  // no player and get dropped, and you hear the greeting from the middle.
+  try {
+    await setupAudio();
+  } catch (err) {
+    console.error("audio setup failed", err);
+    setStatus("Microphone access is needed — allow it, then click again.", false);
+    teardown();
+    return;
+  }
+  if (!active) return; // user clicked Stop while the mic prompt was open
+
+  setStatus("connecting…", false);
   const userId = Math.random().toString(36).slice(2);
   const backendUrl = new URL(voiceAgentOrigin);
   const proto = backendUrl.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${backendUrl.host}/ws/${userId}`);
 
-  ws.onopen = async () => {
-    await setupAudio();
+  ws.onopen = () => {
     setStatus("Listening — try: “I'd like a check-up, I'm John Smith.”", true);
   };
 
@@ -90,12 +104,15 @@ async function start() {
     if (active) setStatus("disconnected", false);
     teardown();
   };
-  ws.onerror = () => setStatus("connection error — is the backend running on :8000?", false);
+  ws.onerror = () => setStatus("Connection error — please try again.", false);
 }
 
 async function setupAudio() {
-  // Playback graph (24 kHz).
+  // Playback graph (24 kHz). Created inside the click gesture so the context
+  // starts "running"; resume() covers browsers that still open it suspended
+  // (a suspended context would silently swallow the greeting audio).
   playbackContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
+  if (playbackContext.state === "suspended") await playbackContext.resume();
   await playbackContext.audioWorklet.addModule("/pcm-player-processor.js");
   playerNode = new AudioWorkletNode(playbackContext, "pcm-player-processor");
   playerNode.connect(playbackContext.destination);
