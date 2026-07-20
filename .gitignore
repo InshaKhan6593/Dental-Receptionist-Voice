@@ -15,3 +15,6 @@ venv/
 # call recordings
 *.wav
 recordings/
+
+# Local Netlify folder
+.netlify
