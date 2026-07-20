@@ -1,0 +1,17 @@
+# secrets - NEVER commit (use .env.example as the template)
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.uv/
+
+# local tooling
+.claude/
+
+# call recordings
+*.wav
+recordings/

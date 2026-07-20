@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Clinic config = the ONLY thing that changes per practice (multi-tenant).
+# The agent prompt, tools and resolver all read from this file. Deploying a new
+# clinic = copy this file, change the values, add its Twilio number + PMS token.
+# ---------------------------------------------------------------------------
+clinic_id: riverside
+name: Riverside Dental Practice
+timezone: Europe/London
+phone_display: "020 7946 0000"
+# The Twilio number that routes to this clinic (fill once purchased).
+inbound_number: ""
+
+# PMS the clinic uses + the per-clinic API token (kept in env, referenced by name).
+pms:
+  type: dentally
+  api_token_env: DENTALLY_TOKEN_RIVERSIDE
+
+opening_hours:
+  monday: "09:00-17:00"
+  tuesday: "09:00-17:00"
+  wednesday: "09:00-17:00"
+  thursday: "09:00-17:00"
+  friday: "09:00-17:00"
+  saturday: closed
+  sunday: closed
+
+# Appointment types the agent may book by phone.
+# Maps a caller-friendly name -> Dentally reason + duration + which role does it.
+appointment_types:
+  - name: Check-up
+    dentally_reason: Exam
+    duration_minutes: 15
+    role: Dentist
+  - name: New Patient Exam
+    dentally_reason: Exam
+    duration_minutes: 30
+    role: Dentist
+  - name: Hygiene
+    dentally_reason: Scale & Polish
+    duration_minutes: 30
+    role: Hygienist
+  - name: Emergency
+    dentally_reason: Emergency
+    duration_minutes: 20
+    role: Dentist
+
+# How existing patients are verified (knowledge-based challenge).
+verification:
+  required_fields: [last_name, date_of_birth, postcode]
+  max_attempts: 3
+
+emergency:
+  script: >
+    If this is a life-threatening emergency, please hang up and dial 999.
+    For urgent dental pain or trauma I can take your details and arrange an
+    emergency callback from the practice as a priority.
+
+escalation:
+  transfer_number: "+441234567890"
+  transfer_when: [caller_requests_human, verification_failed, out_of_scope]
+
+notifications:
+  # n8n webhook that fans out email/SMS to the clinic (fill in).
+  n8n_webhook_url: ""
+  clinic_email: "reception@riverside-dental.example"

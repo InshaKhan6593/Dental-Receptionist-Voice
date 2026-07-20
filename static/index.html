@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101411" />
+    <title>Riverside Dental — AI Reception</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #e9eee8;
+        --muted: #9ca69d;
+        --ground: #101411;
+        --panel: #171d18;
+        --line: rgba(233, 238, 232, 0.14);
+        --accent: #b9d44e;
+        --accent-ink: #18200c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-width: 320px;
+        min-height: 100dvh;
+        overflow-x: hidden;
+        background: var(--ground);
+        color: var(--ink);
+        font-family: "Aptos", "Segoe UI", system-ui, sans-serif;
+      }
+      body::before {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        content: "";
+        background-image: linear-gradient(rgba(233, 238, 232, 0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(233, 238, 232, 0.025) 1px, transparent 1px);
+        background-size: 36px 36px;
+        mask-image: linear-gradient(to bottom, black, transparent 75%);
+      }
+      .app-shell {
+        width: min(1180px, calc(100% - 48px));
+        min-height: 100dvh;
+        margin: 0 auto;
+        padding: 28px 0 24px;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding-bottom: 22px;
+        border-bottom: 1px solid var(--line);
+      }
+      .wordmark { display: flex; align-items: center; gap: 11px; font-size: 0.85rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+      .mark { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid var(--accent); border-radius: 50%; color: var(--accent); }
+      .mark svg { width: 15px; height: 15px; }
+      .topbar-meta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+      .topbar-meta::before { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); content: ""; animation: breathe 2.4s ease-in-out infinite; }
+      .stage {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(310px, 0.9fr);
+        gap: clamp(36px, 8vw, 120px);
+        align-items: center;
+        padding: clamp(52px, 10vh, 120px) 0;
+      }
+      .eyebrow { margin: 0 0 18px; color: var(--accent); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+      h1 { max-width: 620px; margin: 0; font-size: clamp(2.65rem, 5.5vw, 5.75rem); font-weight: 650; letter-spacing: -0.065em; line-height: 0.91; }
+      h1 span { color: var(--muted); }
+      .intro { max-width: 520px; margin: 27px 0 0; color: var(--muted); font-size: 1.05rem; line-height: 1.65; }
+      .capabilities { display: flex; flex-wrap: wrap; gap: 8px; margin: 29px 0 0; }
+      .capabilities span { padding: 8px 10px; border: 1px solid var(--line); border-radius: 999px; color: #c3cbc2; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.7rem; }
+      .testcard { max-width: 520px; margin: 26px 0 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(185, 212, 78, 0.05); }
+      .testcard b { display: block; margin-bottom: 6px; color: var(--accent); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.66rem; letter-spacing: 0.1em; text-transform: uppercase; }
+      .testcard p { margin: 0; color: #c3cbc2; font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.78rem; line-height: 1.6; }
+      .console { position: relative; min-height: 470px; display: grid; align-content: center; justify-items: center; padding: 44px 32px 34px; overflow: hidden; border: 1px solid var(--line); border-radius: 26px; background: linear-gradient(145deg, rgba(255,255,255,0.035), rgba(255,255,255,0.008)); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 28px 80px rgba(0,0,0,0.22); }
+      .console::before { position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: var(--accent); content: ""; transform-origin: left; transform: scaleX(0.26); }
+      .console-kicker { position: absolute; top: 24px; left: 28px; color: var(--muted); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.67rem; letter-spacing: 0.1em; text-transform: uppercase; }
+      .voice-orbit { position: relative; display: grid; width: min(250px, 66vw); aspect-ratio: 1; place-items: center; }
+      .voice-orbit::before, .voice-orbit::after { position: absolute; border: 1px solid rgba(185,212,78,0.28); border-radius: 50%; content: ""; }
+      .voice-orbit::before { inset: 1px; animation: orbit 5s linear infinite; }
+      .voice-orbit::after { inset: 18px; border-style: dashed; opacity: 0.52; animation: orbit 10s linear infinite reverse; }
+      #talk { position: relative; z-index: 1; display: grid; width: 152px; aspect-ratio: 1; place-items: center; gap: 9px; border: 0; border-radius: 50%; cursor: pointer; color: var(--accent-ink); background: var(--accent); box-shadow: 0 0 0 10px rgba(185,212,78,0.08); font: inherit; transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), background 180ms ease, box-shadow 180ms ease; }
+      #talk:hover { transform: translateY(-3px); box-shadow: 0 0 0 14px rgba(185,212,78,0.12); }
+      #talk:focus-visible { outline: 2px solid #ffffff; outline-offset: 5px; }
+      #talk:active { transform: scale(0.97); }
+      #talk.live { background: #d6ea83; box-shadow: 0 0 0 14px rgba(185,212,78,0.16); animation: live-button 1.7s ease-in-out infinite; }
+      .mic-icon { width: 28px; height: 28px; }
+      #talk-label { font-size: 0.78rem; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }
+      .status-row { display: grid; width: 100%; grid-template-columns: 1fr auto; gap: 15px; align-items: end; margin-top: 38px; padding-top: 18px; border-top: 1px solid var(--line); }
+      #status { min-height: 2.5em; color: #d0d7cf; font-size: 0.86rem; line-height: 1.5; }
+      .latency { color: var(--muted); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.66rem; letter-spacing: 0.08em; text-align: right; text-transform: uppercase; }
+      .latency b { display: block; margin-top: 5px; color: var(--accent); font-size: 0.8rem; font-weight: 600; }
+      .footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-top: 21px; border-top: 1px solid var(--line); color: var(--muted); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.7rem; letter-spacing: 0.07em; text-transform: uppercase; }
+      .credit { margin: 0; color: #c4ccc2; }
+      @keyframes breathe { 50% { opacity: 0.34; transform: scale(0.72); } }
+      @keyframes orbit { to { transform: rotate(360deg); } }
+      @keyframes live-button { 50% { box-shadow: 0 0 0 20px rgba(185,212,78,0.04); } }
+      @media (max-width: 760px) {
+        .app-shell { width: min(100% - 32px, 620px); padding-top: 18px; }
+        .topbar-meta { display: none; }
+        .stage { grid-template-columns: 1fr; gap: 42px; padding: 54px 0; }
+        .console { min-height: 430px; }
+        .footer { align-items: flex-start; flex-direction: column; gap: 8px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="wordmark">
+          <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.8 2z" /></svg></span>
+          Riverside Dental
+        </div>
+        <div class="topbar-meta">reception line · live</div>
+      </header>
+
+      <section class="stage" aria-labelledby="page-title">
+        <div class="copy">
+          <p class="eyebrow">AI phone receptionist</p>
+          <h1 id="page-title">Call the practice.<br /><span>Book in seconds.</span></h1>
+          <p class="intro">A voice receptionist that answers, verifies the patient, checks the diary and books the appointment — in real time. Interrupt it naturally, just like a real call.</p>
+          <div class="capabilities" aria-label="Capabilities"><span>verify patients</span><span>book · reschedule · cancel</span><span>16 kHz / 24 kHz</span></div>
+          <div class="testcard">
+            <b>Test identity (already in the system)</b>
+            <p>“I'm John Smith, date of birth 12 April 1985, postcode SW1A 1AA.” Then ask for a check-up with Dr Griffiths.</p>
+          </div>
+        </div>
+
+        <section class="console" aria-label="Voice control console">
+          <div class="console-kicker">01 / reception line</div>
+          <div class="voice-orbit">
+            <button id="talk" type="button" aria-label="Start talking">
+              <svg class="mic-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7" /></svg>
+              <span id="talk-label">Begin</span>
+            </button>
+          </div>
+          <div class="status-row">
+            <div id="status" aria-live="polite">Ready when you are. Click to connect and allow microphone access.</div>
+            <div class="latency">stream mode<b>bi-directional</b></div>
+          </div>
+        </section>
+      </section>
+
+      <footer class="footer"><span>Gemini Live / Dentally</span><p class="credit">Developed by Insha Khan</p></footer>
+    </main>
+    <script src="/runtime-config.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

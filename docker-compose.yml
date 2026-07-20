@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: dental_pg
+    environment:
+      POSTGRES_USER: dental
+      POSTGRES_PASSWORD: dental
+      POSTGRES_DB: dental
+    # Host 5433 -> container 5432 (5432 is often taken by a native Postgres on Windows).
+    ports:
+      - "5433:5432"
+    volumes:
+      - dental_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dental"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  dental_pg_data:

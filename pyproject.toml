@@ -1,0 +1,34 @@
+[project]
+name = "dental-receptionist"
+version = "0.1.0"
+description = "Production-grade AI voice dental receptionist - Google ADK + Gemini Live + Twilio + a Dentally-shaped PMS."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Google Agent Development Kit - drives the Gemini Live session.
+    "google-adk>=1.0.0",
+    # Web server + websocket transport (Twilio Media Streams + browser test).
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    # Postgres: PMS data + ADK session/message persistence.
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.9",   # sync driver (our models / PMS / seed)
+    "asyncpg>=0.30.0",          # async driver (ADK DatabaseSessionService)
+    # Realistic UK dental dataset.
+    "faker>=30.0.0",
+    # PMS client (talks to the mock Dentally API; swap base URL for the real one).
+    "httpx>=0.27.0",
+    # Observability: per-call traces + voice-recording attachments.
+    "langsmith>=0.1.0",
+    # WAV encoding of the call recording.
+    "numpy>=1.26.0",
+    "python-dotenv>=1.0.1",
+    "pyyaml>=6.0",
+    # Fuzzy name -> practitioner_id resolution against the reference cache.
+    "rapidfuzz>=3.9.0",
+    # G.711 mu-law transcoding: audioop was removed from stdlib in Python 3.13.
+    "audioop-lts; python_version >= '3.13'",
+]
+
+[tool.uv]
+package = false
