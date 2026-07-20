@@ -15,12 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, HTTPException, Request, Response, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.staticfiles import StaticFiles
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -138,11 +142,40 @@ def _collect_transcripts(event, transcript: list):
 
 
 # ------------------------------ Twilio bridge -------------------------------
+def _twilio_signature_ok(request: Request, form: dict) -> bool:
+    """Verify Twilio signed this webhook (HMAC-SHA1 over the full URL + sorted
+    POST params, per Twilio's spec). Without this, anyone who finds the public
+    URL can open live Gemini sessions on our quota.
+
+    Skipped only when TWILIO_AUTH_TOKEN is unset (local dev / browser demo).
+    Heroku terminates TLS, so rebuild the public https URL from X-Forwarded-*
+    rather than trusting the raw request scheme.
+    """
+    token = os.getenv("TWILIO_AUTH_TOKEN")
+    if not token:
+        logger.warning("TWILIO_AUTH_TOKEN unset - webhook signature NOT verified")
+        return True
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host", "")
+    url = os.getenv("PUBLIC_BASE_URL") or f"{proto}://{host}"
+    url = url.rstrip("/") + request.url.path
+
+    payload = url + "".join(f"{k}{form[k]}" for k in sorted(form))
+    digest = hmac.new(token.encode(), payload.encode("utf-8"), hashlib.sha1).digest()
+    expected = base64.b64encode(digest).decode()
+    return hmac.compare_digest(expected, signature)
+
+
 @app.post("/twilio/voice")
 async def twilio_voice(request: Request):
     """TwiML: bridge the inbound call to our Media Streams WebSocket, forwarding
     the caller's number so the session can seed caller ID."""
-    form = await request.form()
+    form = dict(await request.form())
+    if not _twilio_signature_ok(request, form):
+        logger.warning("Rejected /twilio/voice - bad or missing Twilio signature")
+        raise HTTPException(status_code=403, detail="invalid Twilio signature")
     caller = form.get("From", "unknown")
     host = request.headers.get("host")
     ws_url = f"wss://{host}/twilio/stream"
