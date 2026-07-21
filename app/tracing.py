@@ -18,7 +18,9 @@ and the WAVs would silently upload as inputs JSON instead of attachments.
 import io
 import logging
 import os
+import time
 import wave
+from datetime import datetime, timezone
 
 logger = logging.getLogger("dental.tracing")
 
@@ -73,6 +75,32 @@ class CallRecorder:
         if self.agent:
             out["agent_audio"] = pcm_to_wav(self.agent, self.agent_rate)
         return out
+
+
+class TurnBuffer:
+    """Folds streamed input/output transcription fragments into ordered
+    conversation turns (caller/agent), each with wall-clock start/end times, so a
+    call can be traced as a turn-by-turn sequence instead of one transcript blob.
+
+    Gemini Live streams transcription in small deltas; consecutive deltas from the
+    same speaker are one turn, and a speaker change starts the next turn."""
+
+    def __init__(self):
+        self.turns: list[dict] = []
+
+    def add(self, role: str, text: str) -> None:
+        if not text:
+            return
+        now = time.time()
+        if self.turns and self.turns[-1]["role"] == role:
+            self.turns[-1]["text"] += text        # same speaker still talking
+            self.turns[-1]["end"] = now
+        else:
+            self.turns.append({"role": role, "text": text, "start": now, "end": now})
+
+    def text(self) -> str:
+        """Flat transcript, one line per turn, for the CallLog row."""
+        return "\n".join(f"{t['role']}: {t['text']}" for t in self.turns)
 
 
 # --------------------------- per-call parent run ----------------------------
@@ -140,10 +168,30 @@ if _LS:
                 "transcript_chars": len(transcript or "")}
 
 
+def _emit_turns(parent, turns) -> None:
+    """Emit each conversation turn as an ordered child run under the parent, so the
+    call renders as caller -> agent -> ... in sequence (interleaved with the PMS
+    tool runs by real time). Best-effort per turn; one bad turn never sinks the rest."""
+    for t in turns or []:
+        text = (t.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            child = parent.create_child(
+                name=t["role"], run_type="chain", inputs={"speaker": t["role"]},
+                start_time=datetime.fromtimestamp(t["start"], tz=timezone.utc))
+            child.end(outputs={"text": text},
+                      end_time=datetime.fromtimestamp(t.get("end", t["start"]), tz=timezone.utc))
+            child.post()
+            child.patch()
+        except Exception:
+            logger.exception("LangSmith turn run failed (non-fatal)")
+
+
 def log_call(clinic_id, call_sid, caller_number, disposition, verified,
-             transcript, recorder: "CallRecorder | None") -> None:
-    """Close out the call's `voice_call` run: attach the recording as a child run,
-    then finalize the parent with the disposition + transcript."""
+             transcript, recorder: "CallRecorder | None", turns=None) -> None:
+    """Close out the call's `voice_call` run: emit a child run per conversation turn
+    (so the dialogue reads in sequence), attach the recording, and finalize the parent."""
     if not enabled():
         return
     parent = _CALL_RUNS.pop(call_sid, None)
@@ -165,6 +213,8 @@ def log_call(clinic_id, call_sid, caller_number, disposition, verified,
         # recording is never lost.
         if parent is not None:
             extra["parent"] = parent
+            # Per-turn child runs: the call reads as caller -> agent -> ... in order.
+            _emit_turns(parent, turns)
         _log_recording(clinic_id=clinic_id, call_sid=call_sid, caller_number=caller_number,
                        disposition=disposition, verified=verified, transcript=transcript,
                        caller_audio=caller_audio, agent_audio=agent_audio,

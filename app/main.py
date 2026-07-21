@@ -40,7 +40,7 @@ from .models import CallLog, SessionLocal, init_db
 from .pms import PMSClient
 from .pms import router as pms_router
 from .telephony import pcm24k_to_ulaw8k, ulaw8k_to_pcm16k
-from .tracing import CallRecorder, log_call, start_call
+from .tracing import CallRecorder, TurnBuffer, log_call, start_call
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dental.main")
@@ -110,15 +110,15 @@ async def _start_session(user_id: str, state: dict):
 
 
 async def _finalize(user_id: str, session_id: str, call_sid: str, caller_number: str,
-                    recorder: CallRecorder, transcript: list[tuple[str, str]]):
-    """Write the call record + push the voice-recording trace to LangSmith."""
+                    recorder: CallRecorder, turns: TurnBuffer):
+    """Write the call record + push the voice-call trace to LangSmith."""
     try:
         session = await _runner.session_service.get_session(
             app_name=APP_NAME, user_id=user_id, session_id=session_id)
         state = session.state if session else {}
     except Exception:
         state = {}
-    text = "\n".join(f"{who}: {t}" for who, t in transcript)
+    text = turns.text()
     disposition = state.get("disposition") or "abandoned"
     with SessionLocal() as db:
         db.add(CallLog(
@@ -131,17 +131,18 @@ async def _finalize(user_id: str, session_id: str, call_sid: str, caller_number:
         db.commit()
     log_call(clinic_id=runtime.CLINIC["clinic_id"], call_sid=call_sid,
              caller_number=caller_number, disposition=disposition,
-             verified=bool(state.get("verified")), transcript=text, recorder=recorder)
+             verified=bool(state.get("verified")), transcript=text, recorder=recorder,
+             turns=turns.turns)
     logger.info("Call %s ended - disposition=%s", call_sid, disposition)
 
 
-def _collect_transcripts(event, transcript: list):
+def _collect_transcripts(event, turns: TurnBuffer):
     it = getattr(event, "input_transcription", None)
     if it and getattr(it, "text", None):
-        transcript.append(("caller", it.text))
+        turns.add("caller", it.text)
     ot = getattr(event, "output_transcription", None)
     if ot and getattr(ot, "text", None):
-        transcript.append(("agent", ot.text))
+        turns.add("agent", ot.text)
 
 
 # ------------------------------ Twilio bridge -------------------------------
@@ -192,7 +193,7 @@ async def twilio_voice(request: Request):
 async def twilio_stream(ws: WebSocket):
     await ws.accept()
     recorder = CallRecorder()
-    transcript: list = []
+    turns = TurnBuffer()
     stream_sid = {"v": None}
     out_state = {"v": None}
     in_state = {"v": None}
@@ -206,7 +207,7 @@ async def twilio_stream(ws: WebSocket):
                 if stream_sid["v"]:
                     await ws.send_text(json.dumps({"event": "clear", "streamSid": stream_sid["v"]}))
                 continue
-            _collect_transcripts(event, transcript)
+            _collect_transcripts(event, turns)
             content = getattr(event, "content", None)
             if not content or not content.parts:
                 continue
@@ -249,7 +250,7 @@ async def twilio_stream(ws: WebSocket):
             queue.close()
         if session:
             await _finalize(caller_number, session.id, call_sid or "twilio",
-                            caller_number or "unknown", recorder, transcript)
+                            caller_number or "unknown", recorder, turns)
 
 
 # ------------------------------ browser bridge ------------------------------
@@ -258,7 +259,7 @@ async def browser_ws(ws: WebSocket, user_id: str):
     """Browser mic test: client sends base64 PCM16 16k, receives base64 PCM16 24k."""
     await ws.accept()
     recorder = CallRecorder()
-    transcript: list = []
+    turns = TurnBuffer()
     call_sid = f"web-{user_id}"
     events, queue, session = await _start_session(
         user_id=user_id,
@@ -270,7 +271,7 @@ async def browser_ws(ws: WebSocket, user_id: str):
             if getattr(event, "interrupted", False):
                 await ws.send_text(json.dumps({"type": "interrupted"}))
                 continue
-            _collect_transcripts(event, transcript)
+            _collect_transcripts(event, turns)
             content = getattr(event, "content", None)
             if not content or not content.parts:
                 continue
@@ -298,7 +299,7 @@ async def browser_ws(ws: WebSocket, user_id: str):
         logger.info("Browser client %s disconnected", user_id)
     finally:
         queue.close()
-        await _finalize(user_id, session.id, call_sid, user_id, recorder, transcript)
+        await _finalize(user_id, session.id, call_sid, user_id, recorder, turns)
 
 
 # ------------------------------ admin / health ------------------------------
