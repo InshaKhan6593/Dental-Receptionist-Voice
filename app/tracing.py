@@ -1,8 +1,11 @@
-"""LangSmith tracing: per-call voice recording + tool spans.
+"""LangSmith tracing: a per-call waterfall (voice_call -> PMS tool runs +
+recording), not disconnected traces.
 
-What the client cares about: every call becomes a LangSmith run with the CALL
-RECORDING attached (caller + agent audio), plus transcript and final disposition.
-Individual PMS operations are traced as 'tool' runs too.
+Each call opens ONE `voice_call` run at call start (start_call); every PMS tool
+run made during the call nests UNDER it via langsmith_extra["parent"], so the
+call renders as a single waterfall instead of a pile of unrelated root traces
+merely grouped by thread. At call end the recording (caller + agent WAVs),
+transcript and disposition are attached and the parent is closed (log_call).
 
 All LangSmith usage is guarded and best-effort - tracing must NEVER break a call.
 Enable with LANGSMITH_TRACING=true and LANGSMITH_API_KEY in .env.
@@ -20,12 +23,14 @@ import wave
 logger = logging.getLogger("dental.tracing")
 
 TRACING = os.getenv("LANGSMITH_TRACING", "").lower() == "true"
+PROJECT = os.getenv("LANGSMITH_PROJECT", "dental-receptionist")
 
 try:
-    from langsmith import traceable
+    from langsmith import RunTree, traceable
     from langsmith.schemas import Attachment
     _LS = True
 except Exception:  # pragma: no cover
+    RunTree = None
     traceable = None
     Attachment = None
     _LS = False
@@ -70,6 +75,30 @@ class CallRecorder:
         return out
 
 
+# --------------------------- per-call parent run ----------------------------
+# call_sid -> the open `voice_call` RunTree. Tool runs nest UNDER it so a call
+# renders as one waterfall, instead of disconnected roots grouped only by thread.
+_CALL_RUNS: dict = {}
+
+
+def start_call(call_sid: str | None, clinic_id: str | None = None,
+               caller_number: str | None = None) -> None:
+    """Open the parent `voice_call` run at call start, so every PMS tool run made
+    during the call nests under it. Best-effort; never raises."""
+    if not enabled() or not call_sid:
+        return
+    try:
+        run = RunTree(
+            name="voice_call", run_type="chain", project_name=PROJECT,
+            inputs={"caller_number": caller_number, "clinic_id": clinic_id},
+            extra={"metadata": {"session_id": call_sid, "ls_modality": "audio",
+                                "clinic_id": clinic_id, "caller_number": caller_number}})
+        run.post()
+        _CALL_RUNS[call_sid] = run
+    except Exception:
+        logger.exception("LangSmith start_call failed (non-fatal)")
+
+
 # ------------------------------- tool spans ---------------------------------
 def traced_tool(name: str):
     """Decorate a plain helper so it shows as a LangSmith 'tool' run. No-op if off."""
@@ -80,26 +109,31 @@ def traced_tool(name: str):
     return deco
 
 
-def traced_session(session_id: str | None) -> dict:
-    """Kwargs that thread a traced helper's run into a per-call LangSmith thread
-    (grouped by session_id). Spread it into the helper call:
+def traced_session(call_sid: str | None) -> dict:
+    """Kwargs that nest a traced helper's run UNDER this call's `voice_call` run,
+    turning the call's PMS operations into a waterfall. Spread it into the call:
         await _find_patient(...args, **traced_session(state.get("call_sid")))
-    Returns {} when tracing is off, so the SAME call site works whether or not the
-    helper is wrapped by @traceable (the bare function has no langsmith_extra)."""
-    if not enabled() or not session_id:
+    Returns {} when tracing is off or the parent run is missing, so the SAME call
+    site works whether or not the helper is wrapped by @traceable."""
+    if not enabled() or not call_sid:
         return {}
-    return {"langsmith_extra": {"metadata": {"session_id": session_id}}}
+    parent = _CALL_RUNS.get(call_sid)
+    if parent is None:
+        return {}
+    return {"langsmith_extra": {"parent": parent,
+                                "metadata": {"session_id": call_sid}}}
 
 
 # ------------------------------ call recording ------------------------------
 if _LS:
-    # ls_modality=audio makes LangSmith render this as a voice trace.
-    @traceable(run_type="chain", name="voice_call",
+    # A leaf run carrying the call's WAVs; nested under the voice_call parent via
+    # langsmith_extra["parent"]. ls_modality=audio renders it as a voice trace.
+    @traceable(run_type="chain", name="call_recording",
                metadata={"ls_modality": "audio"})
-    def _log_call(clinic_id, call_sid, caller_number, disposition, verified,
-                  transcript,
-                  caller_audio: Attachment = None,
-                  agent_audio: Attachment = None):
+    def _log_recording(clinic_id, call_sid, caller_number, disposition, verified,
+                       transcript,
+                       caller_audio: Attachment = None,
+                       agent_audio: Attachment = None):
         # The bare `Attachment` annotation (not Optional) is what makes the SDK
         # upload these as attachments instead of serializing them into inputs.
         return {"disposition": disposition, "verified": verified,
@@ -108,25 +142,40 @@ if _LS:
 
 def log_call(clinic_id, call_sid, caller_number, disposition, verified,
              transcript, recorder: "CallRecorder | None") -> None:
-    """Create the per-call LangSmith run with the voice recording attached."""
+    """Close out the call's `voice_call` run: attach the recording as a child run,
+    then finalize the parent with the disposition + transcript."""
     if not enabled():
         return
+    parent = _CALL_RUNS.pop(call_sid, None)
     try:
         wavs = recorder.wavs() if recorder else {}
-        kwargs = {}
-        if "caller_audio" in wavs:
-            kwargs["caller_audio"] = Attachment(mime_type="audio/wav", data=wavs["caller_audio"])
-        if "agent_audio" in wavs:
-            kwargs["agent_audio"] = Attachment(mime_type="audio/wav", data=wavs["agent_audio"])
-        # session_id threads this summary together with the call's PMS tool runs;
-        # ls_modality/clinic_id/caller_number are repeated here so they survive
-        # whether call-time metadata merges with or replaces the decorator's.
-        _log_call(clinic_id=clinic_id, call_sid=call_sid, caller_number=caller_number,
-                  disposition=disposition, verified=verified, transcript=transcript,
-                  langsmith_extra={"metadata": {
-                      "session_id": call_sid, "ls_modality": "audio",
-                      "clinic_id": clinic_id, "caller_number": caller_number,
-                      "disposition": disposition}},
-                  **kwargs)
+        # Pass attachments as (mime_type, bytes) TUPLES, not Attachment instances:
+        # RunTree.attachments accepts the tuple form in every langsmith we target,
+        # whereas an Attachment instance trips a pydantic "call" validator in newer
+        # versions, and a None value (one side silent) fails validation outright.
+        # So always supply a valid tuple, falling back to an empty-but-valid WAV
+        # when a side never spoke (e.g. an abandoned call).
+        caller_audio = ("audio/wav", wavs.get("caller_audio") or pcm_to_wav(b"", 16000))
+        agent_audio = ("audio/wav", wavs.get("agent_audio") or pcm_to_wav(b"", 24000))
+        extra = {"metadata": {
+            "session_id": call_sid, "ls_modality": "audio", "clinic_id": clinic_id,
+            "caller_number": caller_number, "disposition": disposition}}
+        # Nest the recording under the call's parent run on the normal path; if the
+        # parent is missing (tracing raced / start failed) it stands alone so the
+        # recording is never lost.
+        if parent is not None:
+            extra["parent"] = parent
+        _log_recording(clinic_id=clinic_id, call_sid=call_sid, caller_number=caller_number,
+                       disposition=disposition, verified=verified, transcript=transcript,
+                       caller_audio=caller_audio, agent_audio=agent_audio,
+                       langsmith_extra=extra)
     except Exception:
         logger.exception("LangSmith call logging failed (non-fatal)")
+    finally:
+        if parent is not None:
+            try:
+                parent.end(outputs={"disposition": disposition, "verified": verified,
+                                    "transcript": transcript})
+                parent.patch()
+            except Exception:
+                logger.exception("LangSmith parent finalize failed (non-fatal)")

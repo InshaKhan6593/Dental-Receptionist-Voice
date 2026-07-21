@@ -40,7 +40,7 @@ from .models import CallLog, SessionLocal, init_db
 from .pms import PMSClient
 from .pms import router as pms_router
 from .telephony import pcm24k_to_ulaw8k, ulaw8k_to_pcm16k
-from .tracing import CallRecorder, log_call
+from .tracing import CallRecorder, log_call, start_call
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dental.main")
@@ -82,6 +82,9 @@ async def _shutdown():
 
 # ------------------------------ live session --------------------------------
 async def _start_session(user_id: str, state: dict):
+    # Open the call's parent LangSmith run first, so the PMS tool runs that follow
+    # nest under it (a waterfall). No-op unless tracing is enabled.
+    start_call(state.get("call_sid"), state.get("clinic_id"), state.get("caller_number"))
     session = await _runner.session_service.create_session(
         app_name=APP_NAME, user_id=user_id, state=state)
     run_config = RunConfig(
