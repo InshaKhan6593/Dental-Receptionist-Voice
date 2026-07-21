@@ -102,6 +102,13 @@ async def _find_patient(last_name, date_of_birth, postcode):
     return await runtime.PMS.find_patient(last_name, date_of_birth, postcode)
 
 
+@traced_tool("pms.create_patient")
+async def _create_patient(first_name, last_name, date_of_birth, postcode,
+                          mobile_phone, email_address):
+    return await runtime.PMS.create_patient(first_name, last_name, date_of_birth,
+                                            postcode, mobile_phone, email_address)
+
+
 @traced_tool("pms.availability")
 async def _availability(pids, start, finish, duration):
     return await runtime.PMS.availability(pids, start, finish, duration)
@@ -167,6 +174,37 @@ async def verify_patient(last_name: str, date_of_birth: str, postcode: str,
         return {"status": "locked",
                 "message": "verification failed - offer a callback or transfer"}
     return {"status": "no_match", "attempts_remaining": remaining}
+
+
+async def register_patient(first_name: str, last_name: str, date_of_birth: str,
+                           postcode: str, mobile_phone: str = "",
+                           email_address: str = "",
+                           tool_context: ToolContext = None) -> dict:
+    """Register a NEW patient (one not already with the practice) so they can book
+    on this call. A new patient has no record to verify - collect their details,
+    read them back, then call this. Do NOT call verify_patient for a new patient.
+
+    Args:
+        first_name: The caller's first name.
+        last_name: The caller's surname.
+        date_of_birth: Date of birth in YYYY-MM-DD format.
+        postcode: The caller's home postcode.
+        mobile_phone: A contact mobile number.
+        email_address: A contact email address.
+    """
+    state = tool_context.state
+    try:
+        p = await _create_patient(first_name, last_name, date_of_birth, postcode,
+                                  mobile_phone, email_address,
+                                  **traced_session(state.get("call_sid")))
+    except Exception:
+        logger.exception("register_patient failed")
+        return {"status": "error", "message": "could not register the patient just now"}
+    state["registered"] = True
+    state["patient_id"] = p["id"]
+    state["patient_name"] = f"{p['first_name']} {p['last_name']}"
+    state["caller_type"] = "new"
+    return {"status": "registered", "first_name": p["first_name"]}
 
 
 async def get_availability(appointment_type: str, clinician: str = "any",
@@ -332,8 +370,9 @@ async def book_appointment(slot_id: int, tool_context: ToolContext) -> dict:
         slot_id: The slot_id of the slot the caller chose.
     """
     state = tool_context.state
-    if not state.get("verified"):
-        return {"status": "not_verified", "message": "verify the patient before booking"}
+    if not (state.get("verified") or state.get("registered")):
+        return {"status": "not_verified",
+                "message": "verify an existing patient or register a new one before booking"}
     slot = next((o for o in state.get("offered_slots", []) if o["slot_id"] == slot_id), None)
     if not slot:
         return {"status": "invalid_slot"}
@@ -354,7 +393,7 @@ async def book_appointment(slot_id: int, tool_context: ToolContext) -> dict:
 async def list_my_appointments(tool_context: ToolContext) -> dict:
     """List the verified patient's upcoming appointments (for reschedule/cancel)."""
     state = tool_context.state
-    if not state.get("verified"):
+    if not (state.get("verified") or state.get("registered")):
         return {"status": "not_verified"}
     try:
         appts = await _list_appointments(state["patient_id"],
@@ -380,7 +419,7 @@ async def cancel_appointment(ref: int, reason: str = "",
         reason: Short cancellation reason.
     """
     state = tool_context.state
-    if not state.get("verified"):
+    if not (state.get("verified") or state.get("registered")):
         return {"status": "not_verified"}
     m = next((x for x in state.get("my_appointments", []) if x["ref"] == ref), None)
     if not m:
@@ -404,7 +443,7 @@ async def reschedule_appointment(ref: int, slot_id: int,
         slot_id: The slot_id of the new slot the caller chose.
     """
     state = tool_context.state
-    if not state.get("verified"):
+    if not (state.get("verified") or state.get("registered")):
         return {"status": "not_verified"}
     m = next((x for x in state.get("my_appointments", []) if x["ref"] == ref), None)
     slot = next((o for o in state.get("offered_slots", []) if o["slot_id"] == slot_id), None)
@@ -462,7 +501,7 @@ def transfer_to_human(reason: str, tool_context: ToolContext) -> dict:
 
 
 TOOLS = [
-    verify_patient, get_availability, get_more_slots, book_appointment,
-    list_my_appointments, reschedule_appointment, cancel_appointment,
-    create_callback_request, transfer_to_human,
+    verify_patient, register_patient, get_availability, get_more_slots,
+    book_appointment, list_my_appointments, reschedule_appointment,
+    cancel_appointment, create_callback_request, transfer_to_human,
 ]

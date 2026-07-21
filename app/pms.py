@@ -17,11 +17,11 @@ from datetime import date, datetime, time, timedelta
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .config import PMS_BASE_URL
 from .models import (Appointment, AppointmentReason, Patient, Practitioner,
-                     SessionLocal)
+                     SessionLocal, Site)
 
 # ---- Practitioner working pattern (used to compute availability) ----
 WORK_START = time(9, 0)
@@ -106,6 +106,43 @@ def search_patients(last_name: str | None = None, date_of_birth: str | None = No
             norm = postcode.replace(" ", "").upper()
             rows = [p for p in rows if (p.postcode or "").replace(" ", "").upper() == norm]
         return {"patients": [_patient_dict(p) for p in rows[:10]]}
+
+
+@router.post("/patients")
+def create_patient(payload: dict):
+    """Register a new patient (Dentally: POST /patients). Returns an existing
+    record if one already matches (last name + DOB + postcode), so a caller who
+    says "new" but is already known does not create a duplicate."""
+    p = payload.get("patient", payload)
+    first_name = (p.get("first_name") or "").strip()
+    last_name = (p.get("last_name") or "").strip()
+    if not (first_name and last_name):
+        raise HTTPException(status_code=422, detail="first_name and last_name are required")
+    try:
+        dob = date.fromisoformat((p.get("date_of_birth") or "").strip())
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_of_birth must be YYYY-MM-DD")
+    postcode = p.get("postcode")
+    norm_pc = (postcode or "").replace(" ", "").upper()
+    with SessionLocal() as db:
+        # de-dupe: same surname + DOB + postcode -> return the existing patient
+        for e in db.scalars(select(Patient).where(
+                Patient.active.is_(True),
+                Patient.last_name.ilike(last_name),
+                Patient.date_of_birth == dob)).all():
+            if (e.postcode or "").replace(" ", "").upper() == norm_pc:
+                return {"patient": _patient_dict(e), "created": False}
+        site = db.scalars(select(Site)).first()
+        new_id = (db.query(func.max(Patient.id)).scalar() or 0) + 1  # Patient.id isn't a sequence
+        patient = Patient(
+            id=new_id, site_id=site.id if site else None, title=p.get("title"),
+            first_name=first_name, last_name=last_name, date_of_birth=dob,
+            postcode=postcode, mobile_phone=p.get("mobile_phone"),
+            email_address=p.get("email_address"), active=True)
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+        return {"patient": _patient_dict(patient), "created": True}
 
 
 def _free_slots_for_day(db, practitioner_id: int, day: date, duration: int):
@@ -260,6 +297,16 @@ class PMSClient:
             "last_name": last_name, "date_of_birth": date_of_birth, "postcode": postcode})
         r.raise_for_status()
         return r.json().get("patients", [])
+
+    async def create_patient(self, first_name, last_name, date_of_birth, postcode,
+                             mobile_phone=None, email_address=None, title=None):
+        r = await self._client.post("/patients", json={"patient": {
+            "first_name": first_name, "last_name": last_name,
+            "date_of_birth": date_of_birth, "postcode": postcode,
+            "mobile_phone": mobile_phone, "email_address": email_address,
+            "title": title}})
+        r.raise_for_status()
+        return r.json()["patient"]
 
     async def list_practitioners(self):
         r = await self._client.get("/practitioners")

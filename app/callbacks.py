@@ -21,10 +21,12 @@ GATED_TOOLS = {
 def before_tool(tool, args, tool_context):
     safe_args = {k: v for k, v in (args or {}).items() if k != "tool_context"}
     logger.info("tool -> %s %s", tool.name, safe_args)
-    if tool.name in GATED_TOOLS and not tool_context.state.get("verified"):
+    state = tool_context.state
+    if tool.name in GATED_TOOLS and not (state.get("verified") or state.get("registered")):
         # short-circuit: the model never gets to run the tool
         return {"status": "not_verified",
-                "message": "Verify the patient first (last name, date of birth, postcode)."}
+                "message": ("Verify an existing patient (last name, date of birth, "
+                            "postcode) or register a new patient first.")}
     return None
 
 
